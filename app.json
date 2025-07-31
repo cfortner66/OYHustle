@@ -1,19 +1,32 @@
 {
   "expo": {
-    "name": "OYHustleClean",
-    "slug": "OYHustleClean",
+    "name": "OYHustle",
+    "slug": "OYHustle",
+    "jsEngine": "jsc",
+    "platforms": [
+      "ios",
+      "android"
+    ],
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "bundleIdentifier": "com.oyhustle.app",
+      "supportsTablet": true,
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSCameraUsageDescription": "This app needs camera access to capture receipt photos for expense tracking.",
+        "NSPhotoLibraryUsageDescription": "This app needs photo library access to select receipt images for expense tracking.",
+        "NSLocationWhenInUseUsageDescription": "This app may use location to help organize jobs by location.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -23,7 +36,13 @@
       "edgeToEdgeEnabled": true
     },
     "web": {
+      "bundler": "metro",
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "95afa65b-859e-4429-b779-1893d91e2402"
+      }
     }
   }
 }
