@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -9,14 +9,16 @@ import {
   Alert,
   Modal,
 } from 'react-native';
+import { Calendar, DateObject } from 'react-native-calendars';
 import { Picker } from '@react-native-picker/picker';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RouteProp } from '@react-navigation/native';
 import { useSelector, useDispatch } from 'react-redux';
 import { Client, Job, ChecklistItem } from '../types';
-import { RootState } from '../state/store';
-import { addJob, updateJob } from '../state/slices/jobsSlice';
+import { RootState, AppDispatch } from '../state/store';
+import { createJob, modifyJob, removeJob } from '../state/slices/jobsSlice';
 import { addClient } from '../state/slices/clientsSlice';
+import { saveClient } from '../services/ClientService';
 import { logService } from '../services/LoggingService';
 import { Checklist, NotesEditor } from '../components';
 
@@ -36,7 +38,7 @@ type Props = {
 };
 
 const AddEditJobScreen = ({ navigation, route }: Props) => {
-  const dispatch = useDispatch();
+  const dispatch = useDispatch<AppDispatch>();
   const clients = useSelector((state: RootState) => state.clients.clients);
   
   const isEditing = route.params && 'job' in route.params;
@@ -50,13 +52,89 @@ const AddEditJobScreen = ({ navigation, route }: Props) => {
     existingJob?.clientId || preselectedClient?.id || ''
   );
   const [quote, setQuote] = useState(existingJob?.quote?.toString() || '');
-  const [quoteDate, setQuoteDate] = useState(existingJob?.quoteDate || '');
-  const [startDate, setStartDate] = useState(existingJob?.startDate || '');
-  const [endDate, setEndDate] = useState(existingJob?.endDate || '');
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const dd = String(today.getDate()).padStart(2, '0');
+  const todayStr = `${yyyy}-${mm}-${dd}`;
+
+  const [quoteDate, setQuoteDate] = useState(existingJob?.quoteDate || todayStr);
+  const [startDate, setStartDate] = useState(existingJob?.startDate || todayStr);
+  const [endDate, setEndDate] = useState(existingJob?.endDate || todayStr);
   const [status, setStatus] = useState<Job['status']>(existingJob?.status || 'Quoted');
   const [toolsAndSupplies, setToolsAndSupplies] = useState<ChecklistItem[]>(existingJob?.toolsAndSupplies || []);
   const [notes, setNotes] = useState(existingJob?.notes || '');
   const [loading, setLoading] = useState(false);
+
+  // Inline validation state
+  const [touched, setTouched] = useState({
+    jobName: false,
+    description: false,
+    selectedClientId: false,
+    quote: false,
+    quoteDate: false,
+    startDate: false,
+    endDate: false,
+  });
+
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+
+  const errors = useMemo(() => {
+    const basic: Record<string, string> = {
+      jobName: jobName.trim() ? '' : 'Job name is required',
+      description: description.trim() ? '' : 'Job description is required',
+      selectedClientId: selectedClientId ? '' : 'Client is required',
+      quote: quote.trim() && !isNaN(parseFloat(quote)) ? '' : 'Enter a valid quote amount',
+      quoteDate: quoteDate.trim() && dateRegex.test(quoteDate) ? '' : 'Use YYYY-MM-DD',
+      startDate: startDate.trim() && dateRegex.test(startDate) ? '' : 'Use YYYY-MM-DD',
+      endDate: endDate.trim() && dateRegex.test(endDate) ? '' : 'Use YYYY-MM-DD',
+    };
+
+    // Cross-field date validations
+    if (!basic.quoteDate && !basic.startDate) {
+      const q = new Date(quoteDate);
+      const s = new Date(startDate);
+      if (s < q) basic.startDate = 'Start date cannot be before quote date';
+    }
+    if (!basic.startDate && !basic.endDate) {
+      const s = new Date(startDate);
+      const e = new Date(endDate);
+      if (e < s) basic.endDate = 'End date cannot be before start date';
+    }
+    return basic;
+  }, [jobName, description, selectedClientId, quote, quoteDate, startDate, endDate]);
+
+  const isValid = useMemo(() => Object.values(errors).every((e) => e === ''), [errors]);
+
+  // For cancel confirmation
+  const initialSnapshotRef = useRef({
+    jobName: existingJob?.jobName || '',
+    description: existingJob?.description || '',
+    selectedClientId: existingJob?.clientId || preselectedClient?.id || '',
+    quote: existingJob?.quote?.toString() || '',
+    quoteDate: existingJob?.quoteDate || '',
+    startDate: existingJob?.startDate || '',
+    endDate: existingJob?.endDate || '',
+    status: existingJob?.status || 'Quoted',
+    toolsAndSupplies: existingJob?.toolsAndSupplies || [],
+    notes: existingJob?.notes || '',
+  });
+
+  const isDirty = useMemo(() => {
+    const s = initialSnapshotRef.current;
+    return (
+      s.jobName !== jobName ||
+      s.description !== description ||
+      s.selectedClientId !== selectedClientId ||
+      s.quote !== quote ||
+      s.quoteDate !== quoteDate ||
+      s.startDate !== startDate ||
+      s.endDate !== endDate ||
+      s.status !== status ||
+      s.notes !== notes ||
+      JSON.stringify(s.toolsAndSupplies) !== JSON.stringify(toolsAndSupplies)
+    );
+  }, [jobName, description, selectedClientId, quote, quoteDate, startDate, endDate, status, notes, toolsAndSupplies]);
 
   // Client creation modal states
   const [showClientModal, setShowClientModal] = useState(false);
@@ -72,67 +150,7 @@ const AddEditJobScreen = ({ navigation, route }: Props) => {
     });
   }, [navigation, isEditing]);
 
-  const validateForm = (): boolean => {
-    if (!jobName.trim()) {
-      Alert.alert('Validation Error', 'Job name is required');
-      return false;
-    }
-    if (!description.trim()) {
-      Alert.alert('Validation Error', 'Job description is required');
-      return false;
-    }
-    if (!selectedClientId) {
-      Alert.alert('Validation Error', 'Please select a client');
-      return false;
-    }
-    if (!quote.trim() || isNaN(parseFloat(quote))) {
-      Alert.alert('Validation Error', 'Please enter a valid quote amount');
-      return false;
-    }
-    if (!quoteDate.trim()) {
-      Alert.alert('Validation Error', 'Quote date is required');
-      return false;
-    }
-    if (!startDate.trim()) {
-      Alert.alert('Validation Error', 'Start date is required');
-      return false;
-    }
-    if (!endDate.trim()) {
-      Alert.alert('Validation Error', 'End date is required');
-      return false;
-    }
-
-    // Validate date format (basic check for YYYY-MM-DD)
-    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-    if (!dateRegex.test(quoteDate)) {
-      Alert.alert('Validation Error', 'Quote date must be in format YYYY-MM-DD');
-      return false;
-    }
-    if (!dateRegex.test(startDate)) {
-      Alert.alert('Validation Error', 'Start date must be in format YYYY-MM-DD');
-      return false;
-    }
-    if (!dateRegex.test(endDate)) {
-      Alert.alert('Validation Error', 'End date must be in format YYYY-MM-DD');
-      return false;
-    }
-
-    // Validate date order
-    const quoteDateObj = new Date(quoteDate);
-    const startDateObj = new Date(startDate);
-    const endDateObj = new Date(endDate);
-
-    if (startDateObj < quoteDateObj) {
-      Alert.alert('Validation Error', 'Start date cannot be before quote date');
-      return false;
-    }
-    if (endDateObj < startDateObj) {
-      Alert.alert('Validation Error', 'End date cannot be before start date');
-      return false;
-    }
-
-    return true;
-  };
+  const validateForm = (): boolean => isValid;
 
   const handleSave = async () => {
     if (!validateForm()) return;
@@ -163,19 +181,9 @@ const AddEditJobScreen = ({ navigation, route }: Props) => {
       };
 
       if (isEditing) {
-        dispatch(updateJob(jobData));
-        logService.logUserAction('Updated job', { 
-          jobId: jobData.id, 
-          jobName: jobData.jobName,
-          clientId: jobData.clientId 
-        });
+        await dispatch(modifyJob(jobData)).unwrap();
       } else {
-        dispatch(addJob(jobData));
-        logService.logUserAction('Created new job', { 
-          jobId: jobData.id, 
-          jobName: jobData.jobName,
-          clientId: jobData.clientId 
-        });
+        await dispatch(createJob(jobData)).unwrap();
       }
 
       Alert.alert(
@@ -200,18 +208,66 @@ const AddEditJobScreen = ({ navigation, route }: Props) => {
     }
   };
 
-  const formatDateInput = (text: string) => {
-    // Remove all non-digits
-    const digits = text.replace(/\D/g, '');
+  const handleDelete = () => {
+    if (!existingJob) return;
     
-    // Format as YYYY-MM-DD
-    if (digits.length <= 4) {
-      return digits;
-    } else if (digits.length <= 6) {
-      return `${digits.slice(0, 4)}-${digits.slice(4)}`;
-    } else {
-      return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+    Alert.alert(
+      'Delete Job',
+      `Are you sure you want to delete "${existingJob.jobName}"? This action cannot be undone.`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setLoading(true);
+              await dispatch(removeJob(existingJob.id)).unwrap();
+              
+              Alert.alert(
+                'Success',
+                'Job deleted successfully',
+                [{ 
+                  text: 'OK', 
+                  onPress: () => navigation.navigate('Jobs')
+                }]
+              );
+            } catch (error) {
+              logService.logError('DELETE_JOB', error as Error);
+              Alert.alert('Error', 'Failed to delete job');
+            } finally {
+              setLoading(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Calendar picker state
+  const [datePickerVisible, setDatePickerVisible] = useState<null | 'quote' | 'start' | 'end'>(null);
+  const openDatePicker = (which: 'quote' | 'start' | 'end') => setDatePickerVisible(which);
+  const closeDatePicker = () => setDatePickerVisible(null);
+  const currentYearRange = {
+    minDate: `${yyyy}-01-01`,
+    maxDate: `${yyyy}-12-31`,
+  };
+  const onSelectDate = (day: DateObject) => {
+    if (!datePickerVisible) return;
+    if (datePickerVisible === 'quote') {
+      setQuoteDate(day.dateString);
+      setTouched((t) => ({ ...t, quoteDate: true }));
+    } else if (datePickerVisible === 'start') {
+      setStartDate(day.dateString);
+      setTouched((t) => ({ ...t, startDate: true }));
+    } else if (datePickerVisible === 'end') {
+      setEndDate(day.dateString);
+      setTouched((t) => ({ ...t, endDate: true }));
     }
+    closeDatePicker();
   };
 
   const validateClientForm = (): boolean => {
@@ -257,6 +313,9 @@ const AddEditJobScreen = ({ navigation, route }: Props) => {
         createdDate: new Date().toISOString(),
       };
 
+      // Persist to clients storage for Clients tab visibility
+      await saveClient(newClient);
+      // Update Redux slice for immediate in-memory availability
       dispatch(addClient(newClient));
       setSelectedClientId(newClient.id);
       
@@ -298,9 +357,13 @@ const AddEditJobScreen = ({ navigation, route }: Props) => {
             style={styles.input}
             value={jobName}
             onChangeText={setJobName}
+            onBlur={() => setTouched((t) => ({ ...t, jobName: true }))}
             placeholder="Enter job name"
             autoCapitalize="words"
           />
+          {!!touched.jobName && !!errors.jobName && (
+            <Text style={styles.errorText}>{errors.jobName}</Text>
+          )}
         </View>
 
         <View style={styles.inputGroup}>
@@ -309,30 +372,39 @@ const AddEditJobScreen = ({ navigation, route }: Props) => {
             style={[styles.input, styles.textArea]}
             value={description}
             onChangeText={setDescription}
+            onBlur={() => setTouched((t) => ({ ...t, description: true }))}
             placeholder="Enter job description"
             multiline
             numberOfLines={4}
             textAlignVertical="top"
           />
+          {!!touched.description && !!errors.description && (
+            <Text style={styles.errorText}>{errors.description}</Text>
+          )}
         </View>
 
         <View style={styles.inputGroup}>
           <View style={styles.clientLabelRow}>
             <Text style={styles.label}>Client *</Text>
-            <TouchableOpacity
-              style={styles.addClientButton}
-              onPress={openClientModal}
-            >
-              <Text style={styles.addClientButtonText}>+ Add New Client</Text>
-            </TouchableOpacity>
+            {!preselectedClient && (
+              <TouchableOpacity
+                style={styles.addClientButton}
+                onPress={openClientModal}
+              >
+                <Text style={styles.addClientButtonText}>+ Add New Client</Text>
+              </TouchableOpacity>
+            )}
           </View>
           <View style={styles.pickerContainer}>
             <Picker
               selectedValue={selectedClientId}
-              onValueChange={setSelectedClientId}
+              onValueChange={(v) => {
+                setSelectedClientId(v);
+                setTouched((t) => ({ ...t, selectedClientId: true }));
+              }}
               style={styles.picker}
             >
-              <Picker.Item label="Select a client..." value="" />
+              {!preselectedClient && <Picker.Item label="Select a client..." value="" />}
               {clients.map((client) => (
                 <Picker.Item
                   key={client.id}
@@ -343,6 +415,9 @@ const AddEditJobScreen = ({ navigation, route }: Props) => {
             </Picker>
           </View>
         </View>
+        {!!touched.selectedClientId && !!errors.selectedClientId && (
+          <Text style={styles.errorText}>{errors.selectedClientId}</Text>
+        )}
 
         <View style={styles.inputGroup}>
           <Text style={styles.label}>Quote Amount ($) *</Text>
@@ -350,42 +425,43 @@ const AddEditJobScreen = ({ navigation, route }: Props) => {
             style={styles.input}
             value={quote}
             onChangeText={setQuote}
+            onBlur={() => setTouched((t) => ({ ...t, quote: true }))}
             placeholder="0.00"
             keyboardType="decimal-pad"
           />
+          {!!touched.quote && !!errors.quote && (
+            <Text style={styles.errorText}>{errors.quote}</Text>
+          )}
         </View>
 
         <View style={styles.inputGroup}>
-          <Text style={styles.label}>Quote Date (YYYY-MM-DD) *</Text>
-          <TextInput
-            style={styles.input}
-            value={quoteDate}
-            onChangeText={(text) => setQuoteDate(formatDateInput(text))}
-            placeholder="2024-01-15"
-            maxLength={10}
-          />
+          <Text style={styles.label}>Quote Date *</Text>
+          <TouchableOpacity style={styles.input} onPress={() => openDatePicker('quote')}>
+            <Text style={styles.inputValueText}>{quoteDate}</Text>
+          </TouchableOpacity>
+          {!!touched.quoteDate && !!errors.quoteDate && (
+            <Text style={styles.errorText}>{errors.quoteDate}</Text>
+          )}
         </View>
 
         <View style={styles.inputGroup}>
-          <Text style={styles.label}>Start Date (YYYY-MM-DD) *</Text>
-          <TextInput
-            style={styles.input}
-            value={startDate}
-            onChangeText={(text) => setStartDate(formatDateInput(text))}
-            placeholder="2024-01-20"
-            maxLength={10}
-          />
+          <Text style={styles.label}>Start Date *</Text>
+          <TouchableOpacity style={styles.input} onPress={() => openDatePicker('start')}>
+            <Text style={styles.inputValueText}>{startDate}</Text>
+          </TouchableOpacity>
+          {!!touched.startDate && !!errors.startDate && (
+            <Text style={styles.errorText}>{errors.startDate}</Text>
+          )}
         </View>
 
         <View style={styles.inputGroup}>
-          <Text style={styles.label}>End Date (YYYY-MM-DD) *</Text>
-          <TextInput
-            style={styles.input}
-            value={endDate}
-            onChangeText={(text) => setEndDate(formatDateInput(text))}
-            placeholder="2024-02-15"
-            maxLength={10}
-          />
+          <Text style={styles.label}>End Date *</Text>
+          <TouchableOpacity style={styles.input} onPress={() => openDatePicker('end')}>
+            <Text style={styles.inputValueText}>{endDate}</Text>
+          </TouchableOpacity>
+          {!!touched.endDate && !!errors.endDate && (
+            <Text style={styles.errorText}>{errors.endDate}</Text>
+          )}
         </View>
 
         <View style={styles.inputGroup}>
@@ -429,18 +505,41 @@ const AddEditJobScreen = ({ navigation, route }: Props) => {
         </View>
 
         <TouchableOpacity
-          style={[styles.saveButton, loading && styles.disabledButton]}
+          style={[styles.saveButton, (loading || !isValid) && styles.disabledButton]}
           onPress={handleSave}
-          disabled={loading}
+          disabled={loading || !isValid}
         >
           <Text style={styles.saveButtonText}>
             {loading ? 'Saving...' : isEditing ? 'Update Job' : 'Save Job'}
           </Text>
         </TouchableOpacity>
 
+        {isEditing && (
+          <TouchableOpacity
+            style={[styles.deleteButton, loading && styles.disabledButton]}
+            onPress={handleDelete}
+            disabled={loading}
+          >
+            <Text style={styles.deleteButtonText}>Delete Job</Text>
+          </TouchableOpacity>
+        )}
+
         <TouchableOpacity
           style={styles.cancelButton}
-          onPress={() => navigation.goBack()}
+          onPress={() => {
+            if (!isDirty) {
+              navigation.goBack();
+            } else {
+              Alert.alert(
+                'Discard changes?',
+                'You have unsaved changes. Are you sure you want to discard them?',
+                [
+                  { text: 'Keep Editing', style: 'cancel' },
+                  { text: 'Discard', style: 'destructive', onPress: () => navigation.goBack() },
+                ]
+              );
+            }
+          }}
           disabled={loading}
         >
           <Text style={styles.cancelButtonText}>Cancel</Text>
@@ -534,6 +633,43 @@ const AddEditJobScreen = ({ navigation, route }: Props) => {
           </ScrollView>
         </View>
       </Modal>
+      {/* Date Picker Modal for current year */}
+      <Modal
+        visible={datePickerVisible !== null}
+        transparent
+        animationType="slide"
+        onRequestClose={closeDatePicker}
+      >
+        <View style={styles.calendarModalBackdrop}>
+          <View style={styles.calendarModalContent}>
+            <Calendar
+              current={
+                datePickerVisible === 'quote'
+                  ? quoteDate
+                  : datePickerVisible === 'start'
+                  ? startDate
+                  : endDate
+              }
+              minDate={currentYearRange.minDate}
+              maxDate={currentYearRange.maxDate}
+              onDayPress={onSelectDate}
+              markedDates={{
+                [
+                  datePickerVisible === 'quote'
+                    ? quoteDate
+                    : datePickerVisible === 'start'
+                    ? startDate
+                    : endDate
+                ]: { selected: true },
+              }}
+              enableSwipeMonths
+            />
+            <TouchableOpacity style={styles.calendarCloseButton} onPress={closeDatePicker}>
+              <Text style={styles.calendarCloseText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 };
@@ -562,6 +698,10 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 16,
     paddingVertical: 12,
+    fontSize: 16,
+    color: '#333',
+  },
+  inputValueText: {
     fontSize: 16,
     color: '#333',
   },
@@ -602,8 +742,25 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
   },
+  deleteButton: {
+    backgroundColor: '#f44336',
+    paddingVertical: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  deleteButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
   disabledButton: {
     opacity: 0.6,
+  },
+  errorText: {
+    color: '#d32f2f',
+    fontSize: 12,
+    marginTop: 6,
   },
   clientLabelRow: {
     flexDirection: 'row',
@@ -651,6 +808,28 @@ const styles = StyleSheet.create({
   modalContent: {
     flex: 1,
     padding: 20,
+  },
+  calendarModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'flex-end',
+  },
+  calendarModalContent: {
+    backgroundColor: '#fff',
+    padding: 12,
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+  },
+  calendarCloseButton: {
+    marginTop: 8,
+    alignItems: 'center',
+    paddingVertical: 12,
+    backgroundColor: '#eee',
+    borderRadius: 8,
+  },
+  calendarCloseText: {
+    color: '#333',
+    fontWeight: '600',
   },
   sectionContainer: {
     marginBottom: 20,

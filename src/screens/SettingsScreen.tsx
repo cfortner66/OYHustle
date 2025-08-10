@@ -6,14 +6,23 @@ import {
   ScrollView,
   TouchableOpacity,
   Switch,
+  TextInput,
   Alert,
 } from 'react-native';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import { logService } from '../services/LoggingService';
+import { useDispatch, useSelector } from 'react-redux';
+import { RootState } from '../state/store';
+import { setSmsOnly, setUserEmail } from '../state/slices/settingsSlice';
+import { seedMinimal, seedFullWorkflow, seedEdgeCases } from '../services/SeedService';
+import { clearAllPersistedData } from '../services/StorageService';
 
 const SettingsScreen: React.FC = () => {
+  const dispatch = useDispatch();
+  const settings = useSelector((state: RootState) => state.settings);
   const [pushNotifications, setPushNotifications] = useState(true);
   const [emailNotifications, setEmailNotifications] = useState(false);
+  const [userEmailLocal, setUserEmailLocal] = useState(settings.userEmail);
   const [darkMode, setDarkMode] = useState(false);
   const [biometricAuth, setBiometricAuth] = useState(false);
 
@@ -42,11 +51,20 @@ const SettingsScreen: React.FC = () => {
           style: 'destructive',
           onPress: () => {
             logService.logUserAction('clear_all_data');
-            // Handle data clearing logic here
+            clearAllPersistedData()
+              .then(() => Alert.alert('Success', 'All data cleared. Restart the app to see a clean state.'))
+              .catch(() => Alert.alert('Error', 'Failed to clear data'));
           },
         },
       ]
     );
+  };
+
+  const handleSeed = (kind: 'minimal' | 'full' | 'edge') => {
+    const run = kind === 'minimal' ? seedMinimal : kind === 'full' ? seedFullWorkflow : seedEdgeCases;
+    run()
+      .then(() => Alert.alert('Seed Complete', `Loaded ${kind} seed data. Reopen Jobs tab to verify.`))
+      .catch(() => Alert.alert('Error', 'Failed to load seed data'));
   };
 
   const settingsSections = [
@@ -59,9 +77,29 @@ const SettingsScreen: React.FC = () => {
           onPress: () => logService.logNavigation('Profile'),
         },
         {
-          icon: 'security',
-          label: 'Privacy & Security',
-          onPress: () => logService.logNavigation('Privacy'),
+          icon: 'email',
+          label: 'Account Email (used for sending quotes/invoices)',
+          onPress: () => {},
+          renderCustom: (
+            <View style={styles.customItemRow}>
+              <TextInput
+                style={styles.emailInput}
+                placeholder="you@example.com"
+                autoCapitalize="none"
+                keyboardType="email-address"
+                value={userEmailLocal}
+                onChangeText={setUserEmailLocal}
+                onBlur={() => dispatch(setUserEmail(userEmailLocal))}
+              />
+            </View>
+          ),
+        },
+        {
+          icon: 'sms',
+          label: 'SMS Only (do not offer email sending)',
+          isSwitch: true,
+          value: settings.smsOnly,
+          onValueChange: (v: boolean) => dispatch(setSmsOnly(v)),
         },
         {
           icon: 'logout',
@@ -143,11 +181,37 @@ const SettingsScreen: React.FC = () => {
           onPress: handleClearData,
           color: '#FF5722',
         },
+        {
+          icon: 'dataset',
+          label: 'Seed: Minimal',
+          onPress: () => handleSeed('minimal'),
+        },
+        {
+          icon: 'dataset-linked',
+          label: 'Seed: Full Workflow',
+          onPress: () => handleSeed('full'),
+        },
+        {
+          icon: 'bug-report',
+          label: 'Seed: Edge Cases',
+          onPress: () => handleSeed('edge'),
+        },
       ],
     },
   ];
 
   const renderSettingItem = (item: any, index: number) => {
+    if (item.renderCustom) {
+      return (
+        <View key={index} style={styles.settingItem}>
+          <View style={styles.settingLeft}>
+            <Icon name={item.icon} size={24} color="#666" />
+            <Text style={styles.settingLabel}>{item.label}</Text>
+          </View>
+          {item.renderCustom}
+        </View>
+      );
+    }
     if (item.isSwitch) {
       return (
         <View key={index} style={styles.settingItem}>

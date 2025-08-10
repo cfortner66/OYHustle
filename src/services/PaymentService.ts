@@ -40,6 +40,10 @@ class PaymentService {
           return this.processPayPalPayment(paymentId, request);
         case 'gcash':
           return this.processGCashPayment(paymentId, request);
+        case 'card':
+          return this.processCardPayment(paymentId, request);
+        case 'venmo':
+          return this.processVenmoPayment(paymentId, request);
         default:
           throw new Error('Unsupported payment method');
       }
@@ -52,6 +56,38 @@ class PaymentService {
     }
   }
 
+  private async processCardPayment(paymentId: string, request: PaymentRequest): Promise<PaymentResult> {
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    const payment: Payment = {
+      id: paymentId,
+      jobId: request.jobId,
+      amount: request.amount,
+      method: 'card',
+      status: 'completed',
+      paymentDate: request.paymentDate ? new Date(request.paymentDate).toISOString() : new Date().toISOString(),
+      transactionId: `CARD_${Math.random().toString(36).substr(2, 9).toUpperCase()}`,
+      notes: 'Credit/Debit card payment completed'
+    };
+    logService.logUserAction('Card payment processed', { paymentId, jobId: request.jobId, amount: request.amount });
+    return { success: true, payment };
+  }
+
+  private async processVenmoPayment(paymentId: string, request: PaymentRequest): Promise<PaymentResult> {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    const payment: Payment = {
+      id: paymentId,
+      jobId: request.jobId,
+      amount: request.amount,
+      method: 'venmo',
+      status: 'completed',
+      paymentDate: request.paymentDate ? new Date(request.paymentDate).toISOString() : new Date().toISOString(),
+      transactionId: `VENMO_${Math.random().toString(36).substr(2, 9).toUpperCase()}`,
+      notes: 'Venmo payment completed'
+    };
+    logService.logUserAction('Venmo payment processed', { paymentId, jobId: request.jobId, amount: request.amount });
+    return { success: true, payment };
+  }
+
   private async processCashPayment(paymentId: string, request: PaymentRequest): Promise<PaymentResult> {
     // Cash payments are immediately marked as completed
     const payment: Payment = {
@@ -60,7 +96,7 @@ class PaymentService {
       amount: request.amount,
       method: 'cash',
       status: 'completed',
-      paymentDate: new Date().toISOString(),
+      paymentDate: request.paymentDate ? new Date(request.paymentDate).toISOString() : new Date().toISOString(),
       transactionId: `CASH_${paymentId}`,
       notes: 'Cash payment received'
     };
@@ -96,7 +132,7 @@ class PaymentService {
         amount: request.amount,
         method: 'paypal',
         status: 'completed',
-        paymentDate: new Date().toISOString(),
+        paymentDate: request.paymentDate ? new Date(request.paymentDate).toISOString() : new Date().toISOString(),
         transactionId: `PP_${Math.random().toString(36).substr(2, 9).toUpperCase()}`,
         notes: 'PayPal payment completed'
       };
@@ -119,7 +155,7 @@ class PaymentService {
         amount: request.amount,
         method: 'paypal',
         status: 'failed',
-        paymentDate: new Date().toISOString(),
+        paymentDate: request.paymentDate ? new Date(request.paymentDate).toISOString() : new Date().toISOString(),
         notes: error instanceof Error ? error.message : 'PayPal payment failed'
       };
 
@@ -150,7 +186,7 @@ class PaymentService {
         amount: request.amount,
         method: 'gcash',
         status: 'completed',
-        paymentDate: new Date().toISOString(),
+        paymentDate: request.paymentDate ? new Date(request.paymentDate).toISOString() : new Date().toISOString(),
         transactionId: `GC_${Math.random().toString(36).substr(2, 9).toUpperCase()}`,
         notes: 'GCash payment completed'
       };
@@ -173,7 +209,7 @@ class PaymentService {
         amount: request.amount,
         method: 'gcash',
         status: 'failed',
-        paymentDate: new Date().toISOString(),
+        paymentDate: request.paymentDate ? new Date(request.paymentDate).toISOString() : new Date().toISOString(),
         notes: error instanceof Error ? error.message : 'GCash payment failed'
       };
 
@@ -185,7 +221,7 @@ class PaymentService {
     }
   }
 
-  getPaymentMethodInfo(method: 'paypal' | 'gcash' | 'cash') {
+  getPaymentMethodInfo(method: 'paypal' | 'gcash' | 'cash' | 'card' | 'venmo') {
     switch (method) {
       case 'paypal':
         return {
@@ -210,6 +246,22 @@ class PaymentService {
           description: 'Pay with cash in person',
           fees: 'No fees',
           processingTime: 'Immediate'
+        };
+      case 'card':
+        return {
+          name: 'Credit/Debit Card',
+          icon: '💳',
+          description: 'Pay with Visa, MasterCard, AmEx',
+          fees: '2.9% + $0.30',
+          processingTime: 'Instant'
+        };
+      case 'venmo':
+        return {
+          name: 'Venmo',
+          icon: '🟦',
+          description: 'Pay via Venmo balance or linked bank',
+          fees: 'Varies',
+          processingTime: 'Instant'
         };
     }
   }

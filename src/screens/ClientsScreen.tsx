@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   Alert,
 } from 'react-native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { Client } from '../types';
 import { getClients, deleteClient } from '../services/ClientService';
@@ -21,17 +22,21 @@ type RootStackParamList = {
 
 type ClientsScreenNavigationProp = StackNavigationProp<RootStackParamList, 'Clients'>;
 
-type Props = {
-  navigation: ClientsScreenNavigationProp;
-};
-
-const ClientsScreen = ({ navigation }: Props) => {
+const ClientsScreen = () => {
+  const navigation = useNavigation<ClientsScreenNavigationProp>();
   const [clients, setClients] = useState<Client[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     loadClients();
   }, []);
+
+  // Ensure list refreshes when returning to Clients tab
+  useFocusEffect(
+    React.useCallback(() => {
+      loadClients();
+    }, [])
+  );
 
   const loadClients = async () => {
     try {
@@ -135,7 +140,7 @@ const ClientsScreen = ({ navigation }: Props) => {
         <FlatList
           data={clients}
           renderItem={renderClientItem}
-          keyExtractor={(item) => item.id}
+          keyExtractor={(item, index) => `${item.id}-${index}`}
           style={styles.list}
           showsVerticalScrollIndicator={false}
         />

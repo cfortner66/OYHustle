@@ -39,14 +39,14 @@ export const getJobById = async (id: string): Promise<Job | null> => {
 
 export const saveJob = async (job: Job): Promise<void> => {
   try {
-    logService.debug('STORAGE', `Saving new job: ${job.title}`, {
+    logService.debug('STORAGE', `Saving new job: ${job.jobName}`, {
       jobId: job.id,
     });
     const jobs = await getJobs();
     const newJobs = [...jobs, job];
     const jsonValue = JSON.stringify(newJobs);
     await AsyncStorage.setItem(JOBS_KEY, jsonValue);
-    logService.info('STORAGE', `Successfully saved job: ${job.title}`, {
+    logService.info('STORAGE', `Successfully saved job: ${job.jobName}`, {
       jobId: job.id,
       totalJobs: newJobs.length,
     });
@@ -54,7 +54,7 @@ export const saveJob = async (job: Job): Promise<void> => {
     logService.logError('STORAGE', error as Error, {
       operation: 'saveJob',
       jobId: job.id,
-      jobTitle: job.title,
+      jobTitle: job.jobName,
     });
     throw error; // Re-throw to allow caller to handle
   }
@@ -62,7 +62,7 @@ export const saveJob = async (job: Job): Promise<void> => {
 
 export const updateJob = async (updatedJob: Job): Promise<void> => {
   try {
-    logService.debug('STORAGE', `Updating job: ${updatedJob.title}`, {
+    logService.debug('STORAGE', `Updating job: ${updatedJob.jobName}`, {
       jobId: updatedJob.id,
     });
     const jobs = await getJobs();
@@ -84,14 +84,14 @@ export const updateJob = async (updatedJob: Job): Promise<void> => {
     await AsyncStorage.setItem(JOBS_KEY, jsonValue);
     logService.info(
       'STORAGE',
-      `Successfully updated job: ${updatedJob.title}`,
+      `Successfully updated job: ${updatedJob.jobName}`,
       { jobId: updatedJob.id }
     );
   } catch (error) {
     logService.logError('STORAGE', error as Error, {
       operation: 'updateJob',
       jobId: updatedJob.id,
-      jobTitle: updatedJob.title,
+      jobTitle: updatedJob.jobName,
     });
     throw error; // Re-throw to allow caller to handle
   }
@@ -117,7 +117,7 @@ export const deleteJob = async (id: string): Promise<void> => {
     await AsyncStorage.setItem(JOBS_KEY, jsonValue);
     logService.info(
       'STORAGE',
-      `Successfully deleted job: ${jobToDelete.title}`,
+      `Successfully deleted job: ${jobToDelete.jobName}`,
       { jobId: id, remainingJobs: newJobs.length }
     );
   } catch (error) {
@@ -126,5 +126,33 @@ export const deleteJob = async (id: string): Promise<void> => {
       jobId: id,
     });
     throw error; // Re-throw to allow caller to handle
+  }
+};
+
+// Replace the entire jobs collection (used by seeders/tests)
+export const setJobs = async (jobs: Job[]): Promise<void> => {
+  try {
+    logService.debug('STORAGE', `Setting jobs collection (count=${jobs.length})`);
+    const jsonValue = JSON.stringify(jobs);
+    await AsyncStorage.setItem(JOBS_KEY, jsonValue);
+    logService.info('STORAGE', 'Jobs collection replaced successfully');
+  } catch (error) {
+    logService.logError('STORAGE', error as Error, {
+      operation: 'setJobs',
+      jobCount: jobs.length,
+    });
+    throw error;
+  }
+};
+
+// Clear all persisted app data (Redux Persist + storage consumers)
+export const clearAllPersistedData = async (): Promise<void> => {
+  try {
+    logService.warn('STORAGE', 'Clearing ALL persisted data');
+    await AsyncStorage.clear();
+    logService.info('STORAGE', 'All persisted data cleared');
+  } catch (error) {
+    logService.logError('STORAGE', error as Error, { operation: 'clearAllPersistedData' });
+    throw error;
   }
 };

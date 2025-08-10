@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -6,35 +6,48 @@ import {
   FlatList,
   TouchableOpacity,
   Alert,
+  Modal,
+  TouchableWithoutFeedback,
 } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
+import { useSelector, useDispatch } from 'react-redux';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { Job } from '../types';
-import { getJobs } from '../services/StorageService';
-import { logService } from '../services/LoggingService';
+import { fetchJobs, modifyJob } from '../state/slices/jobsSlice';
+import { selectFilteredJobs, selectJobsLoading, selectJobsError } from '../state/selectors/jobsSelectors';
+import { AppDispatch } from '../state/store';
 
 type JobsScreenNavigationProp = StackNavigationProp<RootStackParamList>;
 
 const JobsScreen = () => {
   const navigation = useNavigation<JobsScreenNavigationProp>();
-  const [jobs, setJobs] = useState<Job[]>([]);
-  const [loading, setLoading] = useState(true);
+  const dispatch = useDispatch<AppDispatch>();
+  const [statusPickerJob, setStatusPickerJob] = useState<Job | null>(null);
+  
+  const jobs = useSelector(selectFilteredJobs);
+  const loading = useSelector(selectJobsLoading);
+  const error = useSelector(selectJobsError);
+  const [statusFilter, setStatusFilter] = useState<'All' | Job['status']>('All');
+  const [showAllJobs, setShowAllJobs] = useState(false);
 
-  const loadJobs = async () => {
-    try {
-      setLoading(true);
-      const jobList = await getJobs();
-      setJobs(jobList);
-      logService.logUserAction('Viewed jobs list', { jobCount: jobList.length });
-    } catch (error) {
-      logService.logError('JOBS_SCREEN', error as Error);
-      Alert.alert('Error', 'Failed to load jobs');
-    } finally {
-      setLoading(false);
-    }
+  const loadJobs = () => {
+    dispatch(fetchJobs());
   };
 
+  useFocusEffect(
+    React.useCallback(() => {
+      loadJobs();
+    }, [dispatch])
+  );
+
+  useEffect(() => {
+    if (error) {
+      Alert.alert('Error', error);
+    }
+  }, [error]);
+
+  // Ensure list refresh after returning from AddExpense/AddJob
   useFocusEffect(
     React.useCallback(() => {
       loadJobs();
@@ -52,6 +65,21 @@ const JobsScreen = () => {
     }
   };
 
+  const setJobStatus = async (job: Job, newStatus: Job['status']) => {
+    try {
+      if (job.status === newStatus) {
+        setStatusPickerJob(null);
+        return;
+      }
+      const updated: Job = { ...job, status: newStatus };
+      await dispatch(modifyJob(updated)).unwrap();
+    } catch (error) {
+      Alert.alert('Error', 'Failed to change status');
+    } finally {
+      setStatusPickerJob(null);
+    }
+  };
+
   const formatCurrency = (amount: number) => {
     return `$${amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
   };
@@ -64,6 +92,21 @@ const JobsScreen = () => {
     });
   };
 
+  const statusOptions: Array<'All' | Job['status']> = [
+    'All',
+    'Quoted',
+    'Accepted',
+    'In-Progress',
+    'Completed',
+    'Cancelled',
+  ];
+
+  const filteredJobs = jobs
+    .filter((j) => (statusFilter === 'All' ? true : j.status === statusFilter))
+    .slice()
+    .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
+  const displayedJobs = showAllJobs ? filteredJobs : filteredJobs.slice(0, 5);
+
   const renderJobItem = ({ item }: { item: Job }) => (
     <TouchableOpacity
       style={styles.jobCard}
@@ -71,9 +114,11 @@ const JobsScreen = () => {
     >
       <View style={styles.jobHeader}>
         <Text style={styles.jobName}>{item.jobName}</Text>
-        <View style={[styles.statusBadge, { backgroundColor: getStatusColor(item.status) }]}>
-          <Text style={styles.statusText}>{item.status}</Text>
-        </View>
+        <TouchableOpacity onPress={() => setStatusPickerJob(item)} accessibilityRole="button" accessibilityLabel="Change job status">
+          <View style={[styles.statusBadge, { backgroundColor: getStatusColor(item.status) }]}>
+            <Text style={styles.statusText}>{item.status}</Text>
+          </View>
+        </TouchableOpacity>
       </View>
       
       <Text style={styles.clientName}>Client: {item.clientName}</Text>
@@ -97,6 +142,7 @@ const JobsScreen = () => {
   }
 
   return (
+    <>
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Jobs</Text>
@@ -122,15 +168,70 @@ const JobsScreen = () => {
           </TouchableOpacity>
         </View>
       ) : (
-        <FlatList
-          data={jobs}
-          renderItem={renderJobItem}
-          keyExtractor={(item) => item.id}
-          style={styles.list}
-          showsVerticalScrollIndicator={false}
-        />
+        <>
+          <View style={styles.filterRow}>
+            {statusOptions.map((opt) => (
+              <TouchableOpacity
+                key={opt}
+                style={[styles.filterChip, statusFilter === opt && styles.filterChipActive]}
+                onPress={() => setStatusFilter(opt)}
+              >
+                <Text style={[styles.filterChipText, statusFilter === opt && styles.filterChipTextActive]}>
+                  {opt}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <FlatList
+            data={displayedJobs}
+            renderItem={renderJobItem}
+            keyExtractor={(item) => item.id}
+            style={styles.list}
+            showsVerticalScrollIndicator={false}
+          />
+          {filteredJobs.length > displayedJobs.length && (
+            <View style={{ alignItems: 'center', paddingVertical: 8 }}>
+              <TouchableOpacity onPress={() => setShowAllJobs(true)}>
+                <Text style={styles.showMoreText}>Show older jobs</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+          {showAllJobs && filteredJobs.length > 5 && (
+            <View style={{ alignItems: 'center', paddingVertical: 8 }}>
+              <TouchableOpacity onPress={() => setShowAllJobs(false)}>
+                <Text style={styles.showMoreText}>Show less</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        </>
       )}
     </View>
+
+    {/* Status Picker Modal */}
+    <Modal
+      visible={statusPickerJob !== null}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setStatusPickerJob(null)}
+    >
+      <TouchableWithoutFeedback onPress={() => setStatusPickerJob(null)}>
+        <View style={styles.modalBackdrop}>
+          <TouchableWithoutFeedback>
+            <View style={styles.statusModalContent}>
+              {(['Quoted','Accepted','In-Progress','Completed','Cancelled'] as Job['status'][]).map((s) => (
+                <TouchableOpacity key={s} style={styles.statusOption} onPress={() => statusPickerJob && setJobStatus(statusPickerJob, s)}>
+                  <View style={[styles.statusDot, { backgroundColor: getStatusColor(s) }]} />
+                  <Text style={[styles.statusOptionText, statusPickerJob?.status === s && styles.statusOptionTextActive]}>
+                    {s}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </TouchableWithoutFeedback>
+        </View>
+      </TouchableWithoutFeedback>
+    </Modal>
+    </>
   );
 };
 
@@ -265,6 +366,64 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  showMoreText: {
+    color: '#2196F3',
+    fontWeight: '600',
+  },
+  filterRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+  },
+  filterChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: '#eee',
+  },
+  filterChipActive: {
+    backgroundColor: '#2196F3',
+  },
+  filterChipText: {
+    color: '#333',
+    fontWeight: '600',
+    fontSize: 12,
+  },
+  filterChipTextActive: {
+    color: '#fff',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'flex-end',
+  },
+  statusModalContent: {
+    backgroundColor: '#fff',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+  },
+  statusOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+  },
+  statusDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginRight: 10,
+  },
+  statusOptionText: {
+    fontSize: 16,
+    color: '#333',
+  },
+  statusOptionTextActive: {
+    fontWeight: '700',
   },
 });
 

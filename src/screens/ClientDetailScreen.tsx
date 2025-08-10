@@ -13,6 +13,7 @@ import { useSelector } from 'react-redux';
 import { Client, Job } from '../types';
 import { RootState } from '../state/store';
 import { logService } from '../services/LoggingService';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type RootStackParamList = {
   ClientDetail: { client: Client };
@@ -34,6 +35,11 @@ const ClientDetailScreen = ({ navigation, route }: Props) => {
   const jobs = useSelector((state: RootState) => state.jobs.jobs);
   const [clientJobs, setClientJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<'All' | Job['status']>('All');
+  const INITIAL_COUNT = 5;
+  const LOAD_MORE_COUNT = 20;
+  const [visibleCount, setVisibleCount] = useState<number>(INITIAL_COUNT);
+  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     navigation.setOptions({
@@ -82,6 +88,26 @@ const ClientDetailScreen = ({ navigation, route }: Props) => {
     });
   };
 
+  const statusOptions: Array<'All' | Job['status']> = [
+    'All',
+    'Quoted',
+    'Accepted',
+    'In-Progress',
+    'Completed',
+    'Cancelled',
+  ];
+
+  const filteredJobs = clientJobs
+    .filter(j => (statusFilter === 'All' ? true : j.status === statusFilter))
+    .slice()
+    .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
+  const displayedJobs = filteredJobs.slice(0, visibleCount);
+
+  // Reset visible window when filter or source list changes
+  useEffect(() => {
+    setVisibleCount(INITIAL_COUNT);
+  }, [statusFilter, clientJobs]);
+
   const renderJobItem = ({ item }: { item: Job }) => (
     <TouchableOpacity
       style={styles.jobCard}
@@ -107,7 +133,7 @@ const ClientDetailScreen = ({ navigation, route }: Props) => {
   const completedJobs = clientJobs.filter(job => job.status === 'Completed').length;
 
   return (
-    <ScrollView style={styles.container}>
+    <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}>
       {/* Client Information */}
       <View style={styles.clientInfo}>
         <View style={styles.clientHeader}>
@@ -159,6 +185,20 @@ const ClientDetailScreen = ({ navigation, route }: Props) => {
           </TouchableOpacity>
         </View>
 
+        <View style={styles.filterRow}>
+          {statusOptions.map((opt) => (
+            <TouchableOpacity
+              key={opt}
+              style={[styles.filterChip, statusFilter === opt && styles.filterChipActive]}
+              onPress={() => setStatusFilter(opt)}
+            >
+              <Text style={[styles.filterChipText, statusFilter === opt && styles.filterChipTextActive]}>
+                {opt}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
         {loading ? (
           <Text style={styles.loadingText}>Loading jobs...</Text>
         ) : clientJobs.length === 0 ? (
@@ -175,13 +215,22 @@ const ClientDetailScreen = ({ navigation, route }: Props) => {
             </TouchableOpacity>
           </View>
         ) : (
+          <>
           <FlatList
-            data={clientJobs}
+            data={displayedJobs}
             renderItem={renderJobItem}
             keyExtractor={(item) => item.id}
             scrollEnabled={false}
             showsVerticalScrollIndicator={false}
           />
+          {filteredJobs.length > displayedJobs.length && (
+            <View style={{ alignItems: 'center', paddingVertical: 8 }}>
+              <TouchableOpacity onPress={() => setVisibleCount((c) => c + LOAD_MORE_COUNT)}>
+                <Text style={styles.showMoreText}>Load more</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+          </>
         )}
       </View>
     </ScrollView>
@@ -258,6 +307,29 @@ const styles = StyleSheet.create({
   jobsSection: {
     backgroundColor: '#fff',
     padding: 20,
+  },
+  filterRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 12,
+  },
+  filterChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: '#eee',
+  },
+  filterChipActive: {
+    backgroundColor: '#2196F3',
+  },
+  filterChipText: {
+    color: '#333',
+    fontWeight: '600',
+    fontSize: 12,
+  },
+  filterChipTextActive: {
+    color: '#fff',
   },
   jobsHeader: {
     flexDirection: 'row',
@@ -348,6 +420,10 @@ const styles = StyleSheet.create({
   primaryButtonText: {
     color: '#fff',
     fontSize: 16,
+    fontWeight: '600',
+  },
+  showMoreText: {
+    color: '#2196F3',
     fontWeight: '600',
   },
 });

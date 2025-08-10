@@ -3,8 +3,13 @@ import jobsReducer, {
   updateJob,
   deleteJob,
   setFilter,
+  fetchJobs,
+  createJob,
+  modifyJob,
+  removeJob,
 } from '../state/slices/jobsSlice';
 import { Job } from '../types';
+import { configureStore } from '@reduxjs/toolkit';
 
 describe('jobsSlice', () => {
   const initialState = {
@@ -87,5 +92,97 @@ describe('jobsSlice', () => {
     const actual = jobsReducer(stateWithJob, updateJob(nonExistentJob));
     expect(actual.jobs).toHaveLength(1);
     expect(actual.jobs[0].jobName).toBe('Test Job');
+  });
+
+  describe('async thunks', () => {
+    let store: ReturnType<typeof configureStore>;
+
+    beforeEach(() => {
+      store = configureStore({
+        reducer: {
+          jobs: jobsReducer,
+        },
+        middleware: (getDefaultMiddleware) =>
+          getDefaultMiddleware({
+            serializableCheck: false,
+          }),
+      });
+    });
+
+    it('should handle fetchJobs.pending', () => {
+      const action = { type: fetchJobs.pending.type };
+      const actual = jobsReducer(initialState, action);
+      expect(actual.loading).toBe(true);
+      expect(actual.error).toBe(null);
+    });
+
+    it('should handle fetchJobs.fulfilled', () => {
+      const action = { 
+        type: fetchJobs.fulfilled.type, 
+        payload: [mockJob] 
+      };
+      const actual = jobsReducer(initialState, action);
+      expect(actual.loading).toBe(false);
+      expect(actual.jobs).toEqual([mockJob]);
+      expect(actual.error).toBe(null);
+    });
+
+    it('should handle fetchJobs.rejected', () => {
+      const action = { 
+        type: fetchJobs.rejected.type,
+        error: { message: 'Failed to fetch jobs' }
+      };
+      const actual = jobsReducer(initialState, action);
+      expect(actual.loading).toBe(false);
+      expect(actual.error).toBe('Failed to fetch jobs');
+    });
+
+    it('should handle createJob.fulfilled', () => {
+      const action = { 
+        type: createJob.fulfilled.type, 
+        payload: mockJob 
+      };
+      const actual = jobsReducer(initialState, action);
+      expect(actual.loading).toBe(false);
+      expect(actual.jobs).toEqual([mockJob]);
+      expect(actual.error).toBe(null);
+    });
+
+    it('should handle modifyJob.fulfilled', () => {
+      const stateWithJob = {
+        ...initialState,
+        jobs: [mockJob],
+      };
+
+      const updatedJob = {
+        ...mockJob,
+        jobName: 'Updated Job Name',
+      };
+
+      const action = { 
+        type: modifyJob.fulfilled.type, 
+        payload: updatedJob 
+      };
+      const actual = jobsReducer(stateWithJob, action);
+      expect(actual.loading).toBe(false);
+      expect(actual.jobs[0].jobName).toBe('Updated Job Name');
+      expect(actual.error).toBe(null);
+    });
+
+    it('should handle removeJob.fulfilled', () => {
+      const stateWithJob = {
+        ...initialState,
+        jobs: [mockJob],
+      };
+
+      const action = { 
+        type: removeJob.fulfilled.type, 
+        payload: mockJob.id 
+      };
+      const actual = jobsReducer(stateWithJob, action);
+      expect(actual.loading).toBe(false);
+      expect(actual.jobs).toHaveLength(0);
+      expect(actual.error).toBe(null);
+    });
   });
 });

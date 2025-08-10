@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -13,6 +13,7 @@ import { RouteProp } from '@react-navigation/native';
 import { useDispatch } from 'react-redux';
 import { Client } from '../types';
 import { addClient, updateClient } from '../state/slices/clientsSlice';
+import { saveClient } from '../services/ClientService';
 import { logService } from '../services/LoggingService';
 
 type RootStackParamList = {
@@ -40,39 +41,54 @@ const AddEditClientScreen = ({ navigation, route }: Props) => {
   const [emailAddress, setEmailAddress] = useState(existingClient?.emailAddress || '');
   const [loading, setLoading] = useState(false);
 
+  // Inline validation state
+  const [touched, setTouched] = useState({
+    fullName: false,
+    emailAddress: false,
+    phoneNumber: false,
+    address: false,
+  });
+
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  const errors = useMemo(() => ({
+    fullName: fullName.trim() ? '' : 'Full name is required',
+    emailAddress: emailAddress.trim()
+      ? emailRegex.test(emailAddress) ? '' : 'Enter a valid email address'
+      : 'Email address is required',
+    phoneNumber: phoneNumber.trim() ? '' : 'Phone number is required',
+    address: address.trim() ? '' : 'Address is required',
+  }), [fullName, emailAddress, phoneNumber, address]);
+
+  const isValid = useMemo(() =>
+    Object.values(errors).every((e) => e === ''),
+  [errors]);
+
+  // Dirty state to confirm on cancel
+  const initialSnapshotRef = useRef({
+    fullName: existingClient?.fullName || '',
+    address: existingClient?.address || '',
+    phoneNumber: existingClient?.phoneNumber || '',
+    emailAddress: existingClient?.emailAddress || '',
+  });
+
+  const isDirty = useMemo(() => {
+    const s = initialSnapshotRef.current;
+    return (
+      s.fullName !== fullName ||
+      s.address !== address ||
+      s.phoneNumber !== phoneNumber ||
+      s.emailAddress !== emailAddress
+    );
+  }, [fullName, address, phoneNumber, emailAddress]);
+
   useEffect(() => {
     navigation.setOptions({
       title: isEditing ? 'Edit Client' : 'Add Client',
     });
   }, [navigation, isEditing]);
 
-  const validateForm = (): boolean => {
-    if (!fullName.trim()) {
-      Alert.alert('Validation Error', 'Full name is required');
-      return false;
-    }
-    if (!emailAddress.trim()) {
-      Alert.alert('Validation Error', 'Email address is required');
-      return false;
-    }
-    if (!phoneNumber.trim()) {
-      Alert.alert('Validation Error', 'Phone number is required');
-      return false;
-    }
-    if (!address.trim()) {
-      Alert.alert('Validation Error', 'Address is required');
-      return false;
-    }
-    
-    // Basic email validation
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(emailAddress)) {
-      Alert.alert('Validation Error', 'Please enter a valid email address');
-      return false;
-    }
-    
-    return true;
-  };
+  const validateForm = (): boolean => isValid;
 
   const handleSave = async () => {
     if (!validateForm()) return;
@@ -90,9 +106,11 @@ const AddEditClientScreen = ({ navigation, route }: Props) => {
       };
 
       if (isEditing) {
+        await saveClient(clientData);
         dispatch(updateClient(clientData));
         logService.logUserAction('Updated client', { clientId: clientData.id, clientName: clientData.fullName });
       } else {
+        await saveClient(clientData);
         dispatch(addClient(clientData));
         logService.logUserAction('Created new client', { clientId: clientData.id, clientName: clientData.fullName });
       }
@@ -110,6 +128,21 @@ const AddEditClientScreen = ({ navigation, route }: Props) => {
     }
   };
 
+  const requestCancel = () => {
+    if (!isDirty) {
+      navigation.goBack();
+      return;
+    }
+    Alert.alert(
+      'Discard changes?',
+      'You have unsaved changes. Are you sure you want to discard them?',
+      [
+        { text: 'Keep Editing', style: 'cancel' },
+        { text: 'Discard', style: 'destructive', onPress: () => navigation.goBack() },
+      ]
+    );
+  };
+
   return (
     <ScrollView style={styles.container}>
       <View style={styles.form}>
@@ -119,9 +152,13 @@ const AddEditClientScreen = ({ navigation, route }: Props) => {
             style={styles.input}
             value={fullName}
             onChangeText={setFullName}
+            onBlur={() => setTouched((t) => ({ ...t, fullName: true }))}
             placeholder="Enter client's full name"
             autoCapitalize="words"
           />
+          {!!touched.fullName && !!errors.fullName && (
+            <Text style={styles.errorText}>{errors.fullName}</Text>
+          )}
         </View>
 
         <View style={styles.inputGroup}>
@@ -130,11 +167,15 @@ const AddEditClientScreen = ({ navigation, route }: Props) => {
             style={styles.input}
             value={emailAddress}
             onChangeText={setEmailAddress}
+            onBlur={() => setTouched((t) => ({ ...t, emailAddress: true }))}
             placeholder="client@email.com"
             keyboardType="email-address"
             autoCapitalize="none"
             autoCorrect={false}
           />
+          {!!touched.emailAddress && !!errors.emailAddress && (
+            <Text style={styles.errorText}>{errors.emailAddress}</Text>
+          )}
         </View>
 
         <View style={styles.inputGroup}>
@@ -143,9 +184,13 @@ const AddEditClientScreen = ({ navigation, route }: Props) => {
             style={styles.input}
             value={phoneNumber}
             onChangeText={setPhoneNumber}
+            onBlur={() => setTouched((t) => ({ ...t, phoneNumber: true }))}
             placeholder="(555) 123-4567"
             keyboardType="phone-pad"
           />
+          {!!touched.phoneNumber && !!errors.phoneNumber && (
+            <Text style={styles.errorText}>{errors.phoneNumber}</Text>
+          )}
         </View>
 
         <View style={styles.inputGroup}>
@@ -154,17 +199,21 @@ const AddEditClientScreen = ({ navigation, route }: Props) => {
             style={[styles.input, styles.textArea]}
             value={address}
             onChangeText={setAddress}
+            onBlur={() => setTouched((t) => ({ ...t, address: true }))}
             placeholder="Enter full address"
             multiline
             numberOfLines={3}
             textAlignVertical="top"
           />
+          {!!touched.address && !!errors.address && (
+            <Text style={styles.errorText}>{errors.address}</Text>
+          )}
         </View>
 
         <TouchableOpacity
-          style={[styles.saveButton, loading && styles.disabledButton]}
+          style={[styles.saveButton, (loading || !isValid) && styles.disabledButton]}
           onPress={handleSave}
-          disabled={loading}
+          disabled={loading || !isValid}
         >
           <Text style={styles.saveButtonText}>
             {loading ? 'Saving...' : isEditing ? 'Update Client' : 'Save Client'}
@@ -173,7 +222,7 @@ const AddEditClientScreen = ({ navigation, route }: Props) => {
 
         <TouchableOpacity
           style={styles.cancelButton}
-          onPress={() => navigation.goBack()}
+          onPress={requestCancel}
           disabled={loading}
         >
           <Text style={styles.cancelButtonText}>Cancel</Text>
@@ -240,6 +289,11 @@ const styles = StyleSheet.create({
   },
   disabledButton: {
     opacity: 0.6,
+  },
+  errorText: {
+    color: '#d32f2f',
+    fontSize: 12,
+    marginTop: 6,
   },
 });
 

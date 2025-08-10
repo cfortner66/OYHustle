@@ -9,18 +9,20 @@ import {
   ScrollView,
   Alert,
   Image,
+  Modal,
 } from 'react-native';
+import { Calendar, DateObject } from 'react-native-calendars';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RouteProp } from '@react-navigation/native';
 import { useSelector, useDispatch } from 'react-redux';
 import { Expense, Job } from '../types';
-import { RootState } from '../state/store';
-import { updateJob } from '../state/slices/jobsSlice';
+import { AppDispatch, RootState } from '../state/store';
+import { modifyJob } from '../state/slices/jobsSlice';
 import { cloudStorageService } from '../services/CloudStorageService';
 import { logService } from '../services/LoggingService';
 
 type RootStackParamList = {
-  AddExpense: { job: Job };
+  AddExpense: { job: Job; expense?: Expense };
   ReceiptPhotoCapture: { onPhotoTaken: (photoPath: string) => void };
 };
 
@@ -33,14 +35,27 @@ type Props = {
 };
 
 const AddExpenseScreen = ({ navigation, route }: Props) => {
-  const { job } = route.params;
-  const dispatch = useDispatch();
+  const { job, expense: expenseToEdit } = route.params;
+  const dispatch = useDispatch<AppDispatch>();
   
-  const [description, setDescription] = useState('');
-  const [amount, setAmount] = useState('');
-  const [isReimbursable, setIsReimbursable] = useState(false);
-  const [receiptImageUri, setReceiptImageUri] = useState<string | null>(null);
+  const isEditing = !!expenseToEdit;
+  const [description, setDescription] = useState(expenseToEdit?.description || '');
+  const [amount, setAmount] = useState(expenseToEdit ? String(expenseToEdit.amount) : '');
+  const [isReimbursable, setIsReimbursable] = useState(expenseToEdit?.isReimbursable || false);
+  const [receiptImageUri, setReceiptImageUri] = useState<string | null>(expenseToEdit?.receiptImageLocalUri || null);
   const [loading, setLoading] = useState(false);
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const dd = String(today.getDate()).padStart(2, '0');
+  const todayStr = `${yyyy}-${mm}-${dd}`;
+  const [date, setDate] = useState<string>(expenseToEdit?.date || todayStr);
+  const [datePickerVisible, setDatePickerVisible] = useState(false);
+  const currentYearRange = { minDate: `${yyyy}-01-01`, maxDate: `${yyyy}-12-31` };
+  const onSelectDate = (day: DateObject) => {
+    setDate(day.dateString);
+    setDatePickerVisible(false);
+  };
 
   const validateForm = (): boolean => {
     if (!description.trim()) {
@@ -54,17 +69,17 @@ const AddExpenseScreen = ({ navigation, route }: Props) => {
     return true;
   };
 
-  const handleAddExpense = async () => {
+  const handleSaveExpense = async () => {
     if (!validateForm()) return;
 
     try {
       setLoading(true);
-      
-      const expenseId = `expense_${Date.now()}`;
-      let cloudImageUrl: string | undefined;
+
+      const expenseId = isEditing ? expenseToEdit!.id : `expense_${Date.now()}`;
+      let cloudImageUrl: string | undefined = expenseToEdit?.receiptImageUrl;
       
       // Upload receipt image if one was captured
-      if (receiptImageUri) {
+      if (receiptImageUri && receiptImageUri !== expenseToEdit?.receiptImageLocalUri) {
         const uploadResult = await cloudStorageService.uploadReceiptImage(
           receiptImageUri,
           expenseId
@@ -82,19 +97,24 @@ const AddExpenseScreen = ({ navigation, route }: Props) => {
         description: description.trim(),
         amount: parseFloat(amount),
         isReimbursable,
-        date: new Date().toISOString(),
+        date,
         receiptImageUrl: cloudImageUrl,
         receiptImageLocalUri: receiptImageUri || undefined,
       };
 
-      const updatedJob: Job = {
-        ...job,
-        expenses: [...job.expenses, newExpense],
-      };
+      const updatedJob: Job = isEditing
+        ? {
+            ...job,
+            expenses: job.expenses.map((exp) => (exp.id === expenseId ? newExpense : exp)),
+          }
+        : {
+            ...job,
+            expenses: [...job.expenses, newExpense],
+          };
       
-      dispatch(updateJob(updatedJob));
+      await dispatch(modifyJob(updatedJob)).unwrap();
       
-      logService.logUserAction('Added expense', {
+      logService.logUserAction(isEditing ? 'Edited expense' : 'Added expense', {
         jobId: job.id,
         expenseId: newExpense.id,
         amount: newExpense.amount,
@@ -103,12 +123,12 @@ const AddExpenseScreen = ({ navigation, route }: Props) => {
       
       Alert.alert(
         'Success',
-        'Expense added successfully',
+        isEditing ? 'Expense updated successfully' : 'Expense added successfully',
         [{ text: 'OK', onPress: () => navigation.goBack() }]
       );
     } catch (error) {
-      logService.logError('ADD_EXPENSE', error as Error);
-      Alert.alert('Error', 'Failed to add expense. Please try again.');
+      logService.logError(isEditing ? 'EDIT_EXPENSE' : 'ADD_EXPENSE', error as Error);
+      Alert.alert('Error', isEditing ? 'Failed to update expense. Please try again.' : 'Failed to add expense. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -137,6 +157,47 @@ const AddExpenseScreen = ({ navigation, route }: Props) => {
     );
   };
 
+  const handleDeleteExpense = async () => {
+    if (!isEditing || !expenseToEdit) return;
+
+    Alert.alert(
+      'Delete Expense',
+      'Are you sure you want to delete this expense?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setLoading(true);
+              const updatedJob: Job = {
+                ...job,
+                expenses: job.expenses.filter((exp) => exp.id !== expenseToEdit.id),
+              };
+
+              await dispatch(modifyJob(updatedJob)).unwrap();
+
+              logService.logUserAction('Deleted expense', {
+                jobId: job.id,
+                expenseId: expenseToEdit.id,
+              });
+
+              Alert.alert('Deleted', 'Expense deleted successfully', [
+                { text: 'OK', onPress: () => navigation.goBack() },
+              ]);
+            } catch (error) {
+              logService.logError('DELETE_EXPENSE', error as Error);
+              Alert.alert('Error', 'Failed to delete expense. Please try again.');
+            } finally {
+              setLoading(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   return (
     <ScrollView style={styles.container}>
       <View style={styles.form}>
@@ -149,6 +210,13 @@ const AddExpenseScreen = ({ navigation, route }: Props) => {
             placeholder="Enter expense description"
             autoCapitalize="words"
           />
+        </View>
+
+        <View style={styles.inputGroup}>
+          <Text style={styles.label}>Expense Date *</Text>
+          <TouchableOpacity style={styles.input} onPress={() => setDatePickerVisible(true)}>
+            <Text style={{ fontSize: 16, color: '#333' }}>{date}</Text>
+          </TouchableOpacity>
         </View>
 
         <View style={styles.inputGroup}>
@@ -206,13 +274,23 @@ const AddExpenseScreen = ({ navigation, route }: Props) => {
 
         <TouchableOpacity
           style={[styles.addButton, loading && styles.disabledButton]}
-          onPress={handleAddExpense}
+          onPress={handleSaveExpense}
           disabled={loading}
         >
           <Text style={styles.addButtonText}>
-            {loading ? 'Adding...' : 'Add Expense'}
+            {loading ? (isEditing ? 'Saving...' : 'Adding...') : (isEditing ? 'Save Changes' : 'Add Expense')}
           </Text>
         </TouchableOpacity>
+
+        {isEditing && (
+          <TouchableOpacity
+            style={[styles.deleteButton, loading && styles.disabledButton]}
+            onPress={handleDeleteExpense}
+            disabled={loading}
+          >
+            <Text style={styles.deleteButtonText}>Delete Expense</Text>
+          </TouchableOpacity>
+        )}
 
         <TouchableOpacity
           style={styles.cancelButton}
@@ -222,6 +300,32 @@ const AddExpenseScreen = ({ navigation, route }: Props) => {
           <Text style={styles.cancelButtonText}>Cancel</Text>
         </TouchableOpacity>
       </View>
+
+      <Modal
+        visible={datePickerVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setDatePickerVisible(false)}
+      >
+        <View style={styles.calendarModalBackdrop}>
+          <View style={styles.calendarModalContent}>
+            <Calendar
+              current={date}
+              minDate={currentYearRange.minDate}
+              maxDate={currentYearRange.maxDate}
+              onDayPress={onSelectDate}
+              markedDates={{ [date]: { selected: true } }}
+              enableSwipeMonths
+            />
+            <TouchableOpacity
+              style={styles.calendarCloseButton}
+              onPress={() => setDatePickerVisible(false)}
+            >
+              <Text style={styles.calendarCloseText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 };
@@ -343,6 +447,18 @@ const styles = StyleSheet.create({
   },
   disabledButton: {
     opacity: 0.6,
+  },
+  deleteButton: {
+    backgroundColor: '#f44336',
+    paddingVertical: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  deleteButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
 

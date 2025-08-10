@@ -8,15 +8,19 @@ import {
   Alert,
   ActivityIndicator,
   TextInput,
+  Modal,
+  Linking,
+  Platform,
 } from 'react-native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RouteProp } from '@react-navigation/native';
 import { useSelector, useDispatch } from 'react-redux';
 import { Job, PaymentRequest } from '../types';
-import { RootState } from '../state/store';
-import { updateJob } from '../state/slices/jobsSlice';
+import { AppDispatch, RootState } from '../state/store';
+import { modifyJob } from '../state/slices/jobsSlice';
 import { paymentService } from '../services/PaymentService';
 import { logService } from '../services/LoggingService';
+import { Calendar, DateObject } from 'react-native-calendars';
 
 type RootStackParamList = {
   Payment: { job: Job };
@@ -33,12 +37,26 @@ type Props = {
 
 const PaymentScreen = ({ navigation, route }: Props) => {
   const { job } = route.params;
-  const dispatch = useDispatch();
+  const dispatch = useDispatch<AppDispatch>();
+  const client = useSelector((state: RootState) => state.clients.clients.find(c => c.id === job.clientId));
   
-  const [selectedMethod, setSelectedMethod] = useState<'paypal' | 'gcash' | 'cash' | null>(null);
-  const [customAmount, setCustomAmount] = useState(job.quote.toString());
+  const [selectedMethod, setSelectedMethod] = useState<'paypal' | 'gcash' | 'cash' | 'card' | 'venmo' | null>(null);
+  const reimbursableTotal = job.expenses
+    .filter((e) => e.isReimbursable)
+    .reduce((sum, e) => sum + e.amount, 0);
+  const totalDue = job.quote + reimbursableTotal;
+  const totalPaid = (job.payments || []).reduce((sum, p) => sum + p.amount, 0);
+  const amountOwed = Math.max(totalDue - totalPaid, 0);
+  const [customAmount, setCustomAmount] = useState(amountOwed.toString());
   const [paymentNote, setPaymentNote] = useState('');
   const [processing, setProcessing] = useState(false);
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const dd = String(today.getDate()).padStart(2, '0');
+  const todayStr = `${yyyy}-${mm}-${dd}`;
+  const [paymentDate, setPaymentDate] = useState<string>(todayStr);
+  const [datePickerVisible, setDatePickerVisible] = useState(false);
 
   useEffect(() => {
     navigation.setOptions({
@@ -49,10 +67,12 @@ const PaymentScreen = ({ navigation, route }: Props) => {
   const paymentMethods = [
     paymentService.getPaymentMethodInfo('paypal'),
     paymentService.getPaymentMethodInfo('gcash'),
+    paymentService.getPaymentMethodInfo('card'),
+    paymentService.getPaymentMethodInfo('venmo'),
     paymentService.getPaymentMethodInfo('cash'),
   ];
 
-  const handlePaymentMethodSelect = (method: 'paypal' | 'gcash' | 'cash') => {
+  const handlePaymentMethodSelect = (method: 'paypal' | 'gcash' | 'cash' | 'card' | 'venmo') => {
     setSelectedMethod(method);
   };
 
@@ -82,30 +102,100 @@ const PaymentScreen = ({ navigation, route }: Props) => {
         amount: parseFloat(customAmount),
         method: selectedMethod,
         description: `Payment for ${job.jobName}`,
+        paymentDate,
       };
 
       const result = await paymentService.processPayment(paymentRequest);
 
       if (result.success && result.payment) {
-        // Update job status to completed if full payment received
-        const totalPaid = parseFloat(customAmount);
-        const updatedJob = {
+        const paidAmount = parseFloat(customAmount);
+        const newPayments = [...(job.payments || []), result.payment];
+        const totalPaid = newPayments.reduce((sum, p) => sum + p.amount, 0);
+        const reimbursableTotal = job.expenses.filter(e => e.isReimbursable).reduce((s, e) => s + e.amount, 0);
+        const totalDue = job.quote + reimbursableTotal;
+        const amountOwed = Math.max(totalDue - totalPaid, 0);
+
+        const updatedJob: Job = {
           ...job,
-          status: totalPaid >= job.quote ? 'Completed' as const : job.status,
+          payments: newPayments,
+          status: amountOwed <= 0 ? 'Completed' : job.status,
         };
 
-        dispatch(updateJob(updatedJob));
+        await dispatch(modifyJob(updatedJob)).unwrap();
+
+        const buildInvoiceText = () => {
+          const reimbursableItems = updatedJob.expenses
+            .filter(e => e.isReimbursable)
+            .map(e => `- ${e.description}: $${e.amount.toFixed(2)}${e.receiptImageUrl ? ` (receipt: ${e.receiptImageUrl})` : ''}`)
+            .join('\n');
+          const paymentsList = updatedJob.payments?.map(p => `${new Date(p.paymentDate).toLocaleDateString('en-US')} - ${p.method.toUpperCase()}: $${p.amount.toFixed(2)}`).join('\n') || '';
+          const clientName = client?.fullName || updatedJob.clientName;
+          const tools = (updatedJob.toolsAndSupplies || []).map(t => `- ${t.text}`).join('\n');
+          const notes = updatedJob.notes?.trim() ? updatedJob.notes.trim() : 'None';
+          const partialNote = amountOwed > 0 ? '\n\nNote: Final payment is due at completion of the job.' : '';
+          return (
+            `Invoice for ${updatedJob.jobName}\n` +
+            `Client: ${clientName}\n` +
+            `Quote Amount: $${updatedJob.quote.toFixed(2)}\n` +
+            `Reimbursable Expenses Total: $${reimbursableTotal.toFixed(2)}\n` +
+            `${reimbursableItems ? `\nReimbursable Items:\n${reimbursableItems}\n` : ''}` +
+            `Total Due: $${totalDue.toFixed(2)}\n` +
+            `Total Paid: $${totalPaid.toFixed(2)}\n` +
+            `Amount Owed: $${amountOwed.toFixed(2)}\n` +
+            `${paymentsList ? `\nPayments:\n${paymentsList}\n` : ''}` +
+            `\nTools & Supplies:\n${tools || 'None'}\n` +
+            `\nNotes:\n${notes}` +
+            partialNote
+          );
+        };
+
+        const sendEmailInvoice = async () => {
+          const email = client?.emailAddress;
+          if (!email) {
+            Alert.alert('No Email', 'This client does not have an email address on file.');
+            return;
+          }
+          const subject = `Invoice for ${updatedJob.jobName} - ${client?.fullName || updatedJob.clientName}`;
+          const body = buildInvoiceText();
+          const url = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+          try {
+            const supported = await Linking.canOpenURL(url);
+            if (supported) await Linking.openURL(url);
+            else Alert.alert('Error', 'No mail app available');
+          } catch (e) {
+            Alert.alert('Error', 'Failed to open mail app');
+          }
+        };
+
+        const sendSmsInvoice = async () => {
+          const phone = client?.phoneNumber;
+          if (!phone) {
+            Alert.alert('No Phone', 'This client does not have a phone number on file.');
+            return;
+          }
+          const body = buildInvoiceText();
+          const sep = Platform.OS === 'ios' ? '&' : '?';
+          const url = `sms:${encodeURIComponent(phone)}${sep}body=${encodeURIComponent(body)}`;
+          try {
+            const supported = await Linking.canOpenURL(url);
+            if (supported) await Linking.openURL(url);
+            else Alert.alert('Error', 'No SMS app available');
+          } catch (e) {
+            Alert.alert('Error', 'Failed to open SMS app');
+          }
+        };
+
+        const settings = (await import('../state/store')).store.getState().settings; // access persisted settings
 
         Alert.alert(
           'Payment Successful!',
-          `Payment of $${totalPaid.toFixed(2)} has been processed successfully.${
+          `Payment of $${paidAmount.toFixed(2)} processed successfully.\nRemaining balance: $${amountOwed.toFixed(2)}.${
             result.payment.transactionId ? `\n\nTransaction ID: ${result.payment.transactionId}` : ''
           }`,
           [
-            {
-              text: 'OK',
-              onPress: () => navigation.navigate('JobDetail', { job: updatedJob })
-            }
+            ...(settings.smsOnly ? [] : [{ text: 'Email Invoice', onPress: sendEmailInvoice }]),
+            { text: 'Text Invoice', onPress: sendSmsInvoice },
+            { text: 'OK', onPress: () => navigation.navigate('JobDetail', { job: updatedJob }) }
           ]
         );
       } else {
@@ -138,9 +228,26 @@ const PaymentScreen = ({ navigation, route }: Props) => {
           <Text style={styles.jobTitle}>{job.jobName}</Text>
           <Text style={styles.clientName}>Client: {job.clientName}</Text>
           <View style={styles.amountRow}>
-            <Text style={styles.amountLabel}>Total Quote:</Text>
-            <Text style={styles.amountValue}>{formatCurrency(job.quote)}</Text>
+            <Text style={styles.amountLabel}>Amount Owed:</Text>
+            <Text style={styles.amountValue}>{formatCurrency(amountOwed)}</Text>
           </View>
+          {reimbursableTotal > 0 && (
+            <View style={[styles.amountRow, { marginTop: 6 }] }>
+              <Text style={[styles.amountLabel, { color: '#666' }]}>Includes client expenses:</Text>
+              <Text style={[styles.amountValue, { color: '#666' }]}>{formatCurrency(reimbursableTotal)}</Text>
+            </View>
+          )}
+          {(job.payments && job.payments.length > 0) && (
+            <View style={{ marginTop: 12 }}>
+              <Text style={[styles.amountLabel, { marginBottom: 6 }]}>Previous Payments:</Text>
+              {job.payments.map((p) => (
+                <View key={p.id} style={styles.paymentRow}>
+                  <Text style={styles.paymentText}>{new Date(p.paymentDate).toLocaleDateString()} - {p.method.toUpperCase()}</Text>
+                  <Text style={styles.paymentAmount}>{formatCurrency(p.amount)}</Text>
+                </View>
+              ))}
+            </View>
+          )}
         </View>
 
         {/* Payment Amount */}
@@ -159,15 +266,21 @@ const PaymentScreen = ({ navigation, route }: Props) => {
           <View style={styles.quickAmounts}>
             <TouchableOpacity
               style={styles.quickAmountButton}
-              onPress={() => setCustomAmount((job.quote * 0.5).toFixed(2))}
+              onPress={() => setCustomAmount((amountOwed * 0.5).toFixed(2))}
             >
               <Text style={styles.quickAmountText}>50%</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={styles.quickAmountButton}
-              onPress={() => setCustomAmount(job.quote.toString())}
+              onPress={() => setCustomAmount(amountOwed.toString())}
             >
               <Text style={styles.quickAmountText}>Full Amount</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={[styles.amountRow, { marginTop: 10 }]}>
+            <Text style={styles.amountLabel}>Payment Date</Text>
+            <TouchableOpacity onPress={() => setDatePickerVisible(true)}>
+              <Text style={[styles.amountValue, { color: '#333' }]}>{paymentDate}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -176,7 +289,8 @@ const PaymentScreen = ({ navigation, route }: Props) => {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Payment Method</Text>
           {paymentMethods.map((method, index) => {
-            const methodKey = index === 0 ? 'paypal' : index === 1 ? 'gcash' : 'cash';
+            const keys: ('paypal'|'gcash'|'card'|'venmo'|'cash')[] = ['paypal','gcash','card','venmo','cash'];
+            const methodKey = keys[index];
             const isSelected = selectedMethod === methodKey;
             
             return (
@@ -249,6 +363,31 @@ const PaymentScreen = ({ navigation, route }: Props) => {
           </TouchableOpacity>
         </View>
       </View>
+      <Modal
+        visible={datePickerVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setDatePickerVisible(false)}
+      >
+        <View style={styles.calendarModalBackdrop}>
+          <View style={styles.calendarModalContent}>
+            <Calendar
+              current={paymentDate}
+              minDate={`${yyyy}-01-01`}
+              maxDate={`${yyyy}-12-31`}
+              onDayPress={(day: DateObject) => {
+                setPaymentDate(day.dateString);
+                setDatePickerVisible(false);
+              }}
+              markedDates={{ [paymentDate]: { selected: true } }}
+              enableSwipeMonths
+            />
+            <TouchableOpacity style={styles.calendarCloseButton} onPress={() => setDatePickerVisible(false)}>
+              <Text style={styles.calendarCloseText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 };
@@ -425,6 +564,21 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '600',
   },
+  paymentRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  paymentText: {
+    color: '#666',
+    fontSize: 14,
+  },
+  paymentAmount: {
+    color: '#333',
+    fontSize: 14,
+    fontWeight: '600',
+  },
   cancelButton: {
     backgroundColor: '#fff',
     paddingVertical: 16,
@@ -440,6 +594,28 @@ const styles = StyleSheet.create({
   },
   disabledButton: {
     opacity: 0.6,
+  },
+  calendarModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'flex-end',
+  },
+  calendarModalContent: {
+    backgroundColor: '#fff',
+    padding: 12,
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+  },
+  calendarCloseButton: {
+    marginTop: 8,
+    alignItems: 'center',
+    paddingVertical: 12,
+    backgroundColor: '#eee',
+    borderRadius: 8,
+  },
+  calendarCloseText: {
+    color: '#333',
+    fontWeight: '600',
   },
 });
 

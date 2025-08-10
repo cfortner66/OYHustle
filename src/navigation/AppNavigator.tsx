@@ -16,12 +16,13 @@ const ClientsScreen = lazy(() => import('../screens/ClientsScreen'));
 const ClientDetailScreen = lazy(() => import('../screens/ClientDetailScreen'));
 const AddEditClientScreen = lazy(() => import('../screens/AddEditClientScreen'));
 const PaymentScreen = lazy(() => import('../screens/PaymentScreen'));
-import { Client, Job } from '../types';
+const SettingsScreen = lazy(() => import('../screens/SettingsScreen'));
+import { Client, Job, Expense } from '../types';
 
 export type RootStackParamList = {
   MainTabs: undefined;
   JobDetail: { job: Job };
-  AddExpense: { job: Job };
+  AddExpense: { job: Job; expense?: Expense };
   EditJob: { job: Job };
   AddJob: { client?: Client };
   ClientDetail: { client: Client };
@@ -35,6 +36,7 @@ export type TabParamList = {
   Jobs: undefined;
   Clients: undefined;
   Budget: undefined;
+  Settings: undefined;
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
@@ -98,6 +100,20 @@ const TabNavigator = () => {
           ),
         }}
       />
+      <Tab.Screen
+        name="Settings"
+        component={() => (
+          <Suspense fallback={<LoadingScreen />}>
+            <SettingsScreen />
+          </Suspense>
+        )}
+        options={{
+          tabBarLabel: 'Settings',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="settings" size={size} color={color} />
+          ),
+        }}
+      />
     </Tab.Navigator>
   );
 };
@@ -113,53 +129,70 @@ const AppNavigator = () => {
         />
         <Stack.Screen
           name="JobDetail"
-          component={() => (
+          options={{ title: 'Job Details' }}
+        >
+          {(props) => (
             <Suspense fallback={<LoadingScreen />}>
-              <JobDetailScreen />
+              <JobDetailScreen {...props} />
             </Suspense>
           )}
-          options={{ title: 'Job Details' }}
-        />
-        <Stack.Screen
-          name="AddExpense"
-          component={AddExpenseScreen}
-          options={{ title: 'Add Expense' }}
-        />
-        <Stack.Screen
-          name="EditJob"
-          component={EditJobScreen}
-          options={{ title: 'Edit Job' }}
-        />
-        <Stack.Screen
-          name="AddJob"
-          component={AddEditJobScreen}
-          options={{ title: 'Add Job' }}
-        />
-        <Stack.Screen
-          name="ClientDetail"
-          component={ClientDetailScreen}
-          options={{ title: 'Client Details' }}
-        />
-        <Stack.Screen
-          name="AddClient"
-          component={AddEditClientScreen}
-          options={{ title: 'Add Client' }}
-        />
-        <Stack.Screen
-          name="EditClient"
-          component={AddEditClientScreen}
-          options={{ title: 'Edit Client' }}
-        />
-        <Stack.Screen
-          name="ReceiptPhotoCapture"
-          component={ReceiptPhotoCaptureScreen}
-          options={{ title: 'Capture Receipt' }}
-        />
-        <Stack.Screen
-          name="Payment"
-          component={PaymentScreen}
-          options={{ title: 'Payment' }}
-        />
+        </Stack.Screen>
+        <Stack.Screen name="AddExpense" options={{ title: 'Add Expense' }}>
+          {(props) => (
+            <Suspense fallback={<LoadingScreen />}>
+              <AddExpenseScreen {...props} />
+            </Suspense>
+          )}
+        </Stack.Screen>
+        <Stack.Screen name="EditJob" options={{ title: 'Edit Job' }}>
+          {(props) => (
+            <Suspense fallback={<LoadingScreen />}>
+              <AddEditJobScreen {...props} />
+            </Suspense>
+          )}
+        </Stack.Screen>
+        <Stack.Screen name="AddJob" options={{ title: 'Add Job' }}>
+          {(props) => (
+            <Suspense fallback={<LoadingScreen />}>
+              <AddEditJobScreen {...props} />
+            </Suspense>
+          )}
+        </Stack.Screen>
+        <Stack.Screen name="ClientDetail" options={{ title: 'Client Details' }}>
+          {(props) => (
+            <Suspense fallback={<LoadingScreen />}>
+              <ClientDetailScreen {...props} />
+            </Suspense>
+          )}
+        </Stack.Screen>
+        <Stack.Screen name="AddClient" options={{ title: 'Add Client' }}>
+          {(props) => (
+            <Suspense fallback={<LoadingScreen />}>
+              <AddEditClientScreen {...props} />
+            </Suspense>
+          )}
+        </Stack.Screen>
+        <Stack.Screen name="EditClient" options={{ title: 'Edit Client' }}>
+          {(props) => (
+            <Suspense fallback={<LoadingScreen />}>
+              <AddEditClientScreen {...props} />
+            </Suspense>
+          )}
+        </Stack.Screen>
+        <Stack.Screen name="ReceiptPhotoCapture" options={{ title: 'Capture Receipt' }}>
+          {(props) => (
+            <Suspense fallback={<LoadingScreen />}>
+              <ReceiptPhotoCaptureScreen {...props} />
+            </Suspense>
+          )}
+        </Stack.Screen>
+        <Stack.Screen name="Payment" options={{ title: 'Payment' }}>
+          {(props) => (
+            <Suspense fallback={<LoadingScreen />}>
+              <PaymentScreen {...props} />
+            </Suspense>
+          )}
+        </Stack.Screen>
       </Stack.Navigator>
     </NavigationContainer>
   );

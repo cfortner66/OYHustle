@@ -6,13 +6,17 @@ import {
   ScrollView,
   TouchableOpacity,
   Alert,
+  Modal,
+  TouchableWithoutFeedback,
+  Linking,
+  Platform,
 } from 'react-native';
 import { StackNavigationProp } from '@react-navigation/stack';
-import { RouteProp } from '@react-navigation/native';
+import { RouteProp, useFocusEffect } from '@react-navigation/native';
 import { useSelector, useDispatch } from 'react-redux';
 import { Job, Client } from '../types';
-import { RootState } from '../state/store';
-import { deleteJob } from '../state/slices/jobsSlice';
+import { AppDispatch, RootState } from '../state/store';
+import { deleteJob, modifyJob } from '../state/slices/jobsSlice';
 import { logService } from '../services/LoggingService';
 import { Checklist, NotesEditor } from '../components';
 
@@ -33,20 +37,27 @@ type Props = {
 };
 
 const JobDetailScreen = ({ navigation, route }: Props) => {
-  const dispatch = useDispatch();
+  const dispatch = useDispatch<AppDispatch>();
   const jobs = useSelector((state: RootState) => state.jobs.jobs);
   const clients = useSelector((state: RootState) => state.clients.clients);
   
   const [job, setJob] = useState<Job>(route.params.job);
   const [client, setClient] = useState<Client | null>(null);
   const [loading, setLoading] = useState(true);
+  const [statusPickerVisible, setStatusPickerVisible] = useState(false);
 
   useEffect(() => {
     navigation.setOptions({
       title: job.jobName,
     });
-    loadJobDetails();
-  }, [navigation, job]);
+  }, [navigation, job.jobName]);
+
+  // Refresh details whenever screen gains focus
+  useFocusEffect(
+    React.useCallback(() => {
+      loadJobDetails();
+    }, [jobs, clients])
+  );
 
   const loadJobDetails = async () => {
     try {
@@ -113,6 +124,24 @@ const JobDetailScreen = ({ navigation, route }: Props) => {
     }
   };
 
+  const setJobStatus = async (newStatus: Job['status']) => {
+    try {
+      if (job.status === newStatus) {
+        setStatusPickerVisible(false);
+        return;
+      }
+      const updatedJob: Job = { ...job, status: newStatus };
+      await dispatch(modifyJob(updatedJob)).unwrap();
+      setJob(updatedJob);
+      logService.logUserAction('Changed job status', { jobId: job.id, from: job.status, to: newStatus });
+    } catch (error) {
+      logService.logError('CHANGE_JOB_STATUS', error as Error);
+      Alert.alert('Error', 'Failed to change status');
+    } finally {
+      setStatusPickerVisible(false);
+    }
+  };
+
   const formatCurrency = (amount: number) => {
     return `$${amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
   };
@@ -130,7 +159,87 @@ const JobDetailScreen = ({ navigation, route }: Props) => {
   };
 
   const calculateProfit = () => {
-    return job.quote - calculateTotalExpenses();
+    // Profit should only subtract expenses that are not reimbursable by the client
+    const unreimbursedExpenses = job.expenses.reduce((sum, expense) => {
+      return sum + (expense.isReimbursable ? 0 : expense.amount);
+    }, 0);
+    return job.quote - unreimbursedExpenses;
+  };
+
+  const calculateReimbursableTotal = () => {
+    return job.expenses
+      .filter((e) => e.isReimbursable)
+      .reduce((sum, e) => sum + e.amount, 0);
+  };
+
+  const calculateTotalPaid = () => {
+    const payments = job.payments || [];
+    return payments
+      .filter((p) => p.status !== 'failed' && p.status !== 'cancelled')
+      .reduce((sum, p) => sum + p.amount, 0);
+  };
+
+  const calculateAmountOwed = () => {
+    const totalDue = job.quote + calculateReimbursableTotal();
+    const totalPaid = calculateTotalPaid();
+    return Math.max(totalDue - totalPaid, 0);
+  };
+
+  const buildQuoteText = () => {
+    const reimbTotal = calculateReimbursableTotal();
+    const totalDue = job.quote + reimbTotal;
+    const tools = (job.toolsAndSupplies || [])
+      .map((t) => `- ${t.text}`)
+      .join('\n');
+    const notes = job.notes?.trim() ? job.notes.trim() : 'None';
+    const clientName = client?.fullName || job.clientName;
+    return (
+      `Quote for ${job.jobName}\n` +
+      `Client: ${clientName}\n` +
+      `Quote Amount: ${formatCurrency(job.quote)}\n` +
+      `Reimbursable Expenses: ${formatCurrency(reimbTotal)}\n` +
+      `Total Due: ${formatCurrency(totalDue)}\n` +
+      `\nTools & Supplies:\n${tools || 'None'}\n` +
+      `\nNotes:\n${notes}`
+    );
+  };
+
+  const smsOnly = useSelector((state: RootState) => state.settings.smsOnly);
+
+  const sendEmailQuote = async () => {
+    const email = client?.emailAddress;
+    if (!email) {
+      Alert.alert('No Email', 'This client does not have an email address on file.');
+      return;
+    }
+    const subject = `Quote for ${job.jobName} - ${client?.fullName || job.clientName}`;
+    const body = buildQuoteText();
+    const url = `mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    try {
+      const supported = await Linking.canOpenURL(url);
+      if (supported) await Linking.openURL(url);
+      else Alert.alert('Error', 'No mail app available');
+    } catch (e) {
+      Alert.alert('Error', 'Failed to open mail app');
+    }
+  };
+
+  const sendSmsQuote = async () => {
+    const phone = client?.phoneNumber;
+    if (!phone) {
+      Alert.alert('No Phone', 'This client does not have a phone number on file.');
+      return;
+    }
+    const body = buildQuoteText();
+    const sep = Platform.OS === 'ios' ? '&' : '?';
+    const url = `sms:${encodeURIComponent(phone)}${sep}body=${encodeURIComponent(body)}`;
+    try {
+      const supported = await Linking.canOpenURL(url);
+      if (supported) await Linking.openURL(url);
+      else Alert.alert('Error', 'No SMS app available');
+    } catch (e) {
+      Alert.alert('Error', 'Failed to open SMS app');
+    }
   };
 
   if (loading) {
@@ -142,14 +251,21 @@ const JobDetailScreen = ({ navigation, route }: Props) => {
   }
 
   return (
+    <>
     <ScrollView style={styles.container}>
       {/* Job Header */}
       <View style={styles.jobHeader}>
         <View style={styles.titleRow}>
           <Text style={styles.jobTitle}>{job.jobName}</Text>
-          <View style={[styles.statusBadge, { backgroundColor: getStatusColor(job.status) }]}>
-            <Text style={styles.statusText}>{job.status}</Text>
-          </View>
+          <TouchableOpacity
+            onPress={() => setStatusPickerVisible(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Change job status"
+          >
+            <View style={[styles.statusBadge, { backgroundColor: getStatusColor(job.status) }]}> 
+              <Text style={styles.statusText}>{job.status}</Text>
+            </View>
+          </TouchableOpacity>
         </View>
         
         <View style={styles.actionButtons}>
@@ -160,7 +276,7 @@ const JobDetailScreen = ({ navigation, route }: Props) => {
             <Text style={styles.editButtonText}>Edit</Text>
           </TouchableOpacity>
           
-          {job.status !== 'Completed' && job.status !== 'Cancelled' && (
+          {job.status !== 'Cancelled' && (
             <TouchableOpacity
               style={styles.paymentButton}
               onPress={() => navigation.navigate('Payment', { job })}
@@ -219,6 +335,21 @@ const JobDetailScreen = ({ navigation, route }: Props) => {
         </View>
       )}
 
+      {/* Share Quote */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Share Quote</Text>
+        <View style={styles.shareRow}>
+          {!smsOnly && (
+            <TouchableOpacity style={styles.shareButtonEmail} onPress={sendEmailQuote}>
+              <Text style={styles.shareButtonText}>📧 Email Quote</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity style={styles.shareButtonSms} onPress={sendSmsQuote}>
+            <Text style={styles.shareButtonText}>📱 Text Quote</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
       {/* Financial Summary */}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Financial Summary</Text>
@@ -247,6 +378,35 @@ const JobDetailScreen = ({ navigation, route }: Props) => {
         </View>
       </View>
 
+      {/* Payments */}
+      {job.payments && job.payments.length > 0 && (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Payments ({job.payments.length})</Text>
+
+          <View style={styles.paymentSummaryRow}>
+            <Text style={styles.detailLabel}>Total Paid</Text>
+            <Text style={styles.detailValue}>{formatCurrency(calculateTotalPaid())}</Text>
+          </View>
+          <View style={styles.paymentSummaryRow}>
+            <Text style={styles.detailLabel}>Amount Owed</Text>
+            <Text style={styles.detailValue}>{formatCurrency(calculateAmountOwed())}</Text>
+          </View>
+
+          {job.payments
+            .slice()
+            .sort((a, b) => new Date(b.paymentDate).getTime() - new Date(a.paymentDate).getTime())
+            .map((p) => (
+              <View key={p.id} style={styles.paymentRow}>
+                <Text style={styles.paymentText}>
+                  {new Date(p.paymentDate).toLocaleDateString('en-US')} - {p.method.toUpperCase()}
+                  {p.status && p.status !== 'completed' ? ` (${p.status})` : ''}
+                </Text>
+                <Text style={styles.paymentAmount}>{formatCurrency(p.amount)}</Text>
+              </View>
+            ))}
+        </View>
+      )}
+
       {/* Expenses */}
       <View style={styles.section}>
         <View style={styles.expensesHeader}>
@@ -266,7 +426,11 @@ const JobDetailScreen = ({ navigation, route }: Props) => {
           </View>
         ) : (
           job.expenses.map((expense) => (
-            <View key={expense.id} style={styles.expenseItem}>
+            <TouchableOpacity
+              key={expense.id}
+              style={styles.expenseItem}
+              onPress={() => navigation.navigate('AddExpense', { job, expense })}
+            >
               <View style={styles.expenseHeader}>
                 <Text style={styles.expenseDescription}>{expense.description}</Text>
                 <Text style={styles.expenseAmount}>{formatCurrency(expense.amount)}</Text>
@@ -277,7 +441,7 @@ const JobDetailScreen = ({ navigation, route }: Props) => {
                   <Text style={styles.reimbursableTag}>Reimbursable</Text>
                 )}
               </View>
-            </View>
+            </TouchableOpacity>
           ))
         )}
       </View>
@@ -306,6 +470,32 @@ const JobDetailScreen = ({ navigation, route }: Props) => {
         </View>
       )}
     </ScrollView>
+    
+    {/* Status Picker Modal */}
+    <Modal
+      visible={statusPickerVisible}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setStatusPickerVisible(false)}
+    >
+      <TouchableWithoutFeedback onPress={() => setStatusPickerVisible(false)}>
+        <View style={styles.modalBackdrop}>
+          <TouchableWithoutFeedback>
+            <View style={styles.statusModalContent}>
+              {(['Quoted','Accepted','In-Progress','Completed','Cancelled'] as Job['status'][]).map((s) => (
+                <TouchableOpacity key={s} style={styles.statusOption} onPress={() => setJobStatus(s)}>
+                  <View style={[styles.statusDot, { backgroundColor: getStatusColor(s) }]} />
+                  <Text style={[styles.statusOptionText, s === job.status && styles.statusOptionTextActive]}>
+                    {s}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </TouchableWithoutFeedback>
+        </View>
+      </TouchableWithoutFeedback>
+    </Modal>
+    </>
   );
 };
 
@@ -530,6 +720,81 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 4,
+  },
+  paymentSummaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  paymentRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+  },
+  paymentText: {
+    color: '#666',
+    fontSize: 14,
+  },
+  paymentAmount: {
+    color: '#333',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'flex-end',
+  },
+  statusModalContent: {
+    backgroundColor: '#fff',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+  },
+  statusOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+  },
+  statusDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginRight: 10,
+  },
+  statusOptionText: {
+    fontSize: 16,
+    color: '#333',
+  },
+  statusOptionTextActive: {
+    fontWeight: '700',
+  },
+  shareRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  shareButtonEmail: {
+    flex: 1,
+    backgroundColor: '#2196F3',
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  shareButtonSms: {
+    flex: 1,
+    backgroundColor: '#4CAF50',
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  shareButtonText: {
+    color: '#fff',
+    fontWeight: '600',
   },
 });
 

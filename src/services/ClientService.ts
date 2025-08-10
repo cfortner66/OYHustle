@@ -38,7 +38,9 @@ export const saveClient = async (client: Client): Promise<void> => {
   try {
     logService.debug('CLIENT_SERVICE', `Saving new client: ${client.fullName}`, { clientId: client.id });
     const clients = await getClients();
-    const newClients = [...clients, client];
+    // Avoid duplicate IDs
+    const withoutDuplicate = clients.filter((c) => c.id !== client.id);
+    const newClients = [...withoutDuplicate, client];
     const jsonValue = JSON.stringify(newClients);
     await AsyncStorage.setItem(CLIENTS_KEY, jsonValue);
     logService.info('CLIENT_SERVICE', `Successfully saved client: ${client.fullName}`, { 
@@ -67,7 +69,9 @@ export const updateClient = async (updatedClient: Client): Promise<void> => {
       throw error;
     }
     
-    const newClients = clients.map((client) => (client.id === updatedClient.id ? updatedClient : client));
+    // Ensure only one instance of the client with this ID exists
+    const filtered = clients.filter((c) => c.id !== updatedClient.id);
+    const newClients = [...filtered, updatedClient];
     const jsonValue = JSON.stringify(newClients);
     await AsyncStorage.setItem(CLIENTS_KEY, jsonValue);
     logService.info('CLIENT_SERVICE', `Successfully updated client: ${updatedClient.fullName}`, { clientId: updatedClient.id });
@@ -102,6 +106,19 @@ export const deleteClient = async (id: string): Promise<void> => {
     });
   } catch (error) {
     logService.logError('CLIENT_SERVICE', error as Error, { operation: 'deleteClient', clientId: id });
+    throw error;
+  }
+};
+
+// Replace all clients (used by seeders/tests)
+export const setClients = async (clients: Client[]): Promise<void> => {
+  try {
+    logService.debug('CLIENT_SERVICE', `Setting clients collection (count=${clients.length})`);
+    const jsonValue = JSON.stringify(clients);
+    await AsyncStorage.setItem(CLIENTS_KEY, jsonValue);
+    logService.info('CLIENT_SERVICE', 'Clients collection replaced successfully');
+  } catch (error) {
+    logService.logError('CLIENT_SERVICE', error as Error, { operation: 'setClients' });
     throw error;
   }
 };

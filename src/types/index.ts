@@ -21,6 +21,7 @@ export interface Job {
   expenses: Expense[];
   toolsAndSupplies?: ChecklistItem[];
   notes?: string;
+  payments?: Payment[];
 }
 
 export interface Expense {
@@ -44,7 +45,7 @@ export interface Payment {
   id: string;
   jobId: string;
   amount: number;
-  method: 'paypal' | 'gcash' | 'cash';
+  method: 'paypal' | 'gcash' | 'cash' | 'card' | 'venmo';
   status: 'pending' | 'completed' | 'failed' | 'cancelled';
   transactionId?: string;
   paymentDate: string;
@@ -54,6 +55,7 @@ export interface Payment {
 export interface PaymentRequest {
   jobId: string;
   amount: number;
-  method: 'paypal' | 'gcash' | 'cash';
+  method: 'paypal' | 'gcash' | 'cash' | 'card' | 'venmo';
   description: string;
+  paymentDate?: string; // ISO date (YYYY-MM-DD) or ISO timestamp
 }
